@@ -1,0 +1,99 @@
+using JuMP, Ipopt, LinearAlgebra
+
+
+mod = Model(Ipopt.Optimizer)
+set_optimizer_attribute(mod, "max_iter", 100)
+set_optimizer_attribute(mod, "mumps_mem_percent", 500)
+#A JuMP model is initialized
+
+
+#The parameters of the 1-D rod
+L = 0.1                                 #Length of rod
+λ = 45.0                                # Conductivity
+c = 460.0                               # Specific heat capacitivity
+ρ = 7800.0                              # Material density
+α = λ / (c*ρ)                           # Diffusivity
+
+#Number of spatial discretization points and length of each
+N = 11                                 #Discretization points / nodes
+Δx = L / (N-1)                         # Δx = x[i+1] - x[i]
+
+#Integration from t0 = 0 to tf
+tf = 900.0                             #Final time: 900 seconds = 15 minutes
+Δt = 1.0                               #Sampling period
+k = round(Int,tf / Δt);                #k = number of steps
+
+
+#Initial and reference temperatures in Kelvin
+θinit = 273.0
+θref = 500.0
+
+#bounded input values[u_min,u_max]
+u_min = 0.0
+u_max = 20e5; 
+
+function mpc_emo(θinit)
+      
+    #Decision variables of the optimization problem
+    @variables mod begin
+        θ[1:N,1:k];                              # temperature at x[1:N] at time step k
+        u_min <= u[1:N, 1:k - 1] <= u_max;       # bounded constrained Input u
+        y[1:k];                                  # Output y
+    end
+    
+    #Initial values
+    @constraint(mod, θ[:,1] .== θinit)
+    @constraint(mod, y[1] .== θinit)
+
+    #System dynamics
+    for j in 1:(k-1)
+
+        for i in 2:N-1
+            @constraint(mod,θ[i,j + 1] ==  θ[i,j] + Δt * α/( Δx^2)(θ[i-1,j] - 2θ[i,j] + θ[i+1,j]) ) # Diffusion at inner grid points
+        end
+        @constraint(mod, θ[1,j + 1] == (θ[1,j] + Δt*( α/(Δx^2) * (-2*θ[1,j] + 2*θ[2,j]) + 2/(c * ρ * Δx)*u[j]))) # Left side: heat input
+        @constraint(mod, θ[end,j + 1] == ( θ[end,j] + Δt * α/(Δx^2) * (2*θ[end-1,j] - 2*θ[end,j]) )) # Right side: isolated side
+        @constraint(mod,y[j + 1] ==  θ[end,j + 1]) # Measurement at left side
+    end
+
+    q_w = 1000; # Weighing coefficient for errors (or states)
+    r_w = 1e-4; # Weighing coefficient for input signals
+
+    # e(t) = r(t) - y(t) 
+    # err = q * sum( e(t_i)^2 )  with index i ∈ (1,k-1)
+    err = @NLexpression(mod, sum(q_w * (θref - y[j])^2 for j in 1:k-1) )
+
+    #in_err = r * sum( u(t_i)^2)
+    in_err = @NLexpression(mod, sum(r_w * u[j] ^ 2 for j in 1:k-1) )
+
+    # Cost function
+    J = @NLexpression(mod,0.5 * Δt * (err + in_err))
+
+    #defining the cost function
+    @NLobjective(mod, Min, J)
+
+    #optimizes the model
+    optimize!(mod)
+    return JuMP.value.(θ), JuMP.value.(u)
+end
+
+mech_osc(θ,u) =  α/(Δx^2)* θ + 2/(c * ρ * Δx) * u
+
+θpos = rand(11)          # Recent states
+θ_hist = zeros(11,0)     # History of states
+
+
+for i in 1:50
+    
+    # Run the MPC control optimization
+    θ_plan, u_plan = mpc_emo(θpos)
+ 
+    # Save states
+    θ_hist = hcat(θ_hist, θ_plan[:,1])
+    
+    θpos = θpos + Δt * mech_osc(θpos,u_plan[:,1])
+
+end
+
+using Plots
+plot(θ_hist')
