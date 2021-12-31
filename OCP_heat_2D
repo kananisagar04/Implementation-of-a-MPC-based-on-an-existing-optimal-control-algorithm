@@ -6,7 +6,7 @@ mod = Model(optimizer_with_attributes( Ipopt.Optimizer ,  "max_iter" => 100,
 
 #The parameters of the 1-D rod
 L = 0.1                                 #Length of 2D plate
-W = 0.2                                 # Width of 2D plate
+W = 0.1                                 # Width of 2D plate
 λ = 45.0                                # Conductivity
 c = 460.0                               # Specific heat capacitivity
 ρ = 7800.0                              # Material density
@@ -14,7 +14,7 @@ c = 460.0                               # Specific heat capacitivity
 
 #Number of spatial discretization points and length of each
 Nx = 11                                 #Discretization points / nodes x-direction
-Ny = 21     # y-direction
+Ny = 11                                 #Discretization points / nodes y-direction
 
 Ntotal = Nx * Ny
 
@@ -36,11 +36,11 @@ k = round(Int,tf / Δt);                #k = number of steps
 u_min = 0.0
 u_max = 20e5; 
 
-Nin = 3 # Number of input values
-Nout = 3 # Number of output values
+Nin = 1 # Number of input values
+Nout = 1 # Number of output values
 
 #Decision variables of the optimization problem
-@variable(mod,θ[1:Ntotal,1:k]);                              # temperature at x[1:N] at time step k
+@variable(mod,θ[1:Ntotal,1:k]);                                # temperature at x[1:N] at time step k
 @variable(mod,u_min <= u[1:Nin, 1:k - 1] <= u_max);            # bounded constrained Input u
 @variable(mod, y[1:Nout,1:k]);                                 # Output y
 
@@ -53,12 +53,17 @@ Nout = 3 # Number of output values
 for j in 1:(k-1)
 
   # Add a for-loop + change the existing loop
-    for ix in 2:Nx-1
+    for iy in 2:Ny - 1
         
-        @constraint(mod,θ[i,j + 1] ==  θ[i,j] + Δt * α/( Δx^2)*(θ[i-1,j] - 2*θ[i,j] + θ[i+1,j]) ) # Diffusion at inner grid points
+        for ix in 2:Nx - 1
+        idx=ix + (iy - 1)*Nx    
+        @constraint(mod,θ[idx,j + 1] ==  θ[idx,j] + Δt * α/( Δx^2)*(θ[idx-1,j] - 2*θ[idx,j] + θ[idx+1,j]) ) # Diffusion at inner grid points
+        end
+        
     end
+    
     @constraint(mod, θ[1,j + 1] == (θ[1,j] + Δt*( α/(Δx^2) * (-2*θ[1,j] + 2*θ[2,j]) + 2/(c * ρ * Δx)*u[j]))) # Left side: heat input
-    @constraint(mod, θ[end,j + 1] == ( θ[end,j] + Δt * α/(Δx^2) * (2*θ[end-1,j] - 2*θ[end,j]) )) # Right side: isolated side
+    @constraint(mod, θ[end,j + 1] == ( θ[end,j] + Δt * α/(Δx^2) * (2*θ[end-1,j] - 2*θ[end,j]) )) # Right side: isolated side 
     @constraint(mod,y[j + 1] ==  θ[end,j + 1]) # Measurement at left side
 end
 
@@ -87,10 +92,11 @@ using Plots
 states_θstart = zeros(k)
 states_θend = zeros(k)
 input_u = zeros(k - 1)
-for i = 1 : k-1
-    states_θstart[i] = JuMP.value(θ[1,i])
-    states_θend[i] = JuMP.value(θ[end,i])
-    input_u[i] = JuMP.value(u[i])
+
+for idx = 1 : k-1
+    states_θstart[idx] = JuMP.value(θ[1,idx])
+    states_θend[idx] = JuMP.value(θ[end,idx])
+    input_u[idx] = JuMP.value(u[idx])
 end
 
 states_θstart[end] = JuMP.value(θ[1,end])
@@ -100,4 +106,6 @@ states_θend[end] = JuMP.value(θ[end,end])
 plot(states_θstart,label = "Left side")
 plot!(states_θend,label = "Right side")
 
-plot(input_u, label="Input")
+savefig("lq-optimal_2D_output-bounded.png")
+p3 = plot(input_u,label="input")
+savefig("lq-optimal_2D_input-bounded.png")
